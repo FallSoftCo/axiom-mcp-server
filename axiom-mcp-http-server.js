@@ -167,6 +167,19 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
+// Helper function to limit response size
+function limitResponse(data, maxLength = 50000) {
+  const response = JSON.stringify(data, null, 2);
+  if (response.length > maxLength) {
+    // Calculate how many items to keep
+    const ratio = maxLength / response.length;
+    const itemsToKeep = Math.max(1, Math.floor(data.length * ratio * 0.8)); // 0.8 for safety margin
+    const truncated = data.slice(0, itemsToKeep);
+    return JSON.stringify(truncated, null, 2);
+  }
+  return response;
+}
+
 // Handle tool calls
 mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
@@ -176,7 +189,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         const apl = `${AXIOM_DATASET} | sort _time desc | limit ${limit}`;
         const logs = await queryAxiom(apl);
         
-        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+        return { content: [{ type: 'text', text: limitResponse(logs) }] };
       }
       
       case 'logs_timeRange': {
@@ -184,7 +197,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         const apl = `${AXIOM_DATASET} | sort _time desc`;
         const logs = await queryAxiom(apl, from, to);
         
-        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+        return { content: [{ type: 'text', text: limitResponse(logs) }] };
       }
       
       case 'logs_errors': {
@@ -192,7 +205,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         const apl = `${AXIOM_DATASET} | where level == "error" or data.level == "error" | sort _time desc | limit ${limit}`;
         const logs = await queryAxiom(apl);
         
-        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+        return { content: [{ type: 'text', text: limitResponse(logs) }] };
       }
       
       case 'logs_search': {
@@ -200,7 +213,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         const apl = `${AXIOM_DATASET} | where contains(message, "${query}") or contains(data.message, "${query}") | sort _time desc | limit ${limit}`;
         const logs = await queryAxiom(apl);
         
-        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+        return { content: [{ type: 'text', text: limitResponse(logs) }] };
       }
       
       case 'logs_byRequest': {
@@ -208,7 +221,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         const apl = `${AXIOM_DATASET} | where request_id == "${requestId}" or data.requestId == "${requestId}" | sort _time asc`;
         const logs = await queryAxiom(apl);
         
-        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+        return { content: [{ type: 'text', text: limitResponse(logs) }] };
       }
       
       case 'logs_stats': {
@@ -217,7 +230,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         const apl = `${AXIOM_DATASET} | summarize count() by bin(_time, 1h), source, level | sort _time desc`;
         const stats = await queryAxiom(apl, startTime);
         
-        return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
+        return { content: [{ type: 'text', text: limitResponse(stats) }] };
       }
       
       default:
@@ -248,6 +261,77 @@ app.post('/message', async (req, res) => {
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', dataset: AXIOM_DATASET });
+});
+
+// API endpoints for MCP proxy client
+app.post('/api/mcp/:tool', async (req, res) => {
+  try {
+    const toolName = req.params.tool;
+    const args = req.body;
+    
+    console.log(`API call to tool: ${toolName}`, args);
+    
+    // Call the tool directly using the same logic as the MCP handler
+    let result;
+    switch (toolName) {
+      case 'logs_recent': {
+        const { limit = 100 } = args;
+        const apl = `${AXIOM_DATASET} | sort by _time desc | limit ${limit}`;
+        const logs = await queryAxiom(apl);
+        result = logs;
+        break;
+      }
+      
+      case 'logs_errors': {
+        const { limit = 100 } = args;
+        const apl = `${AXIOM_DATASET} | where level == "error" or level == "ERROR" or contains(message, "error") or contains(message, "Error") | sort by _time desc | limit ${limit}`;
+        const logs = await queryAxiom(apl);
+        result = logs;
+        break;
+      }
+      
+      case 'logs_timeRange': {
+        const { from, to } = args;
+        const apl = `${AXIOM_DATASET} | sort by _time desc`;
+        const logs = await queryAxiom(apl, from, to);
+        result = logs;
+        break;
+      }
+      
+      case 'logs_search': {
+        const { query, limit = 100 } = args;
+        const apl = `${AXIOM_DATASET} | where contains(message, "${query}") or contains(data.message, "${query}") | sort by _time desc | limit ${limit}`;
+        const logs = await queryAxiom(apl);
+        result = logs;
+        break;
+      }
+      
+      case 'logs_byRequest': {
+        const { requestId } = args;
+        const apl = `${AXIOM_DATASET} | where request_id == "${requestId}" or data.requestId == "${requestId}" | sort by _time asc`;
+        const logs = await queryAxiom(apl);
+        result = logs;
+        break;
+      }
+      
+      case 'logs_stats': {
+        const { hours = 24 } = args;
+        const startTime = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+        const apl = `${AXIOM_DATASET} | summarize count() by bin(_time, 1h), source, level | sort by _time desc`;
+        const stats = await queryAxiom(apl, startTime);
+        result = stats;
+        break;
+      }
+      
+      default:
+        throw new Error(`Unknown tool: ${toolName}`);
+    }
+    
+    res.json(result);
+  } catch (error) {
+    console.error('API error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Start server
