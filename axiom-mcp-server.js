@@ -177,10 +177,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (request.params.name) {
       case 'logs_recent': {
         const limit = request.params.arguments?.limit || 100;
-        const apl = `* | sort _time desc | limit ${limit}`;
+        // Force a very small limit to avoid token issues
+        const queryLimit = Math.min(5, limit);
+        const apl = `* | sort _time desc | limit ${queryLimit}`;
         const logs = await queryAxiom(apl);
         
-        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+        // Truncate log data if it's too large
+        const truncatedLogs = logs.map(log => {
+          const str = JSON.stringify(log);
+          if (str.length > 1000) {
+            return {
+              ...log,
+              _truncated: true,
+              _originalSize: str.length,
+              message: log.message ? log.message.substring(0, 200) + '...' : undefined,
+              data: log.data ? { 
+                ...Object.fromEntries(
+                  Object.entries(log.data || {}).slice(0, 5)
+                ),
+                _truncated: true 
+              } : undefined
+            };
+          }
+          return log;
+        });
+        
+        return { content: [{ type: 'text', text: JSON.stringify(truncatedLogs, null, 2) }] };
       }
       
       case 'logs_timeRange': {

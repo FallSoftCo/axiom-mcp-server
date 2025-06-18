@@ -36,14 +36,14 @@ const mcpServer = new Server(
 
 // Helper function to query Axiom logs
 async function queryAxiom(apl, startTime = null, endTime = null) {
+  console.log('Executing APL query:', apl);
   const body = {
     apl: apl,
     startTime: startTime || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-    endTime: endTime || new Date().toISOString(),
-    includeCursor: false
+    endTime: endTime || new Date().toISOString()
   };
 
-  const response = await fetch(`${AXIOM_API_URL}/datasets/${AXIOM_DATASET}/query`, {
+  const response = await fetch(`${AXIOM_API_URL}/datasets/_apl?format=legacy`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${AXIOM_API_TOKEN}`,
@@ -59,7 +59,16 @@ async function queryAxiom(apl, startTime = null, endTime = null) {
   }
 
   const data = await response.json();
-  return data.matches || [];
+  const logs = data.matches || [];
+  
+  // Simplify logs to only essential fields
+  return logs.map(log => ({
+    time: log._time,
+    message: log.data?.message || 'No message',
+    level: log.data?.level || 'info',
+    source: log.data?.source || 'unknown',
+    requestId: log.data?.request_id
+  }));
 }
 
 // Define available tools
@@ -68,31 +77,21 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'logs_recent',
-        description: 'Get recent logs with pagination',
+        description: 'Get recent logs',
         inputSchema: {
           type: 'object',
           properties: {
             limit: {
               type: 'number',
-              description: 'Number of logs to fetch from Axiom',
-              default: 100
-            },
-            page: {
-              type: 'number',
-              description: 'Page number for pagination',
-              default: 1
-            },
-            pageSize: {
-              type: 'number',
-              description: 'Number of items per page',
-              default: 20
+              description: 'Number of logs to return (max 5)',
+              default: 5
             }
           }
         }
       },
       {
         name: 'logs_search',
-        description: 'Search logs by text with pagination',
+        description: 'Search logs by text',
         inputSchema: {
           type: 'object',
           properties: {
@@ -103,18 +102,8 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             limit: {
               type: 'number',
-              description: 'Number of logs to fetch from Axiom',
-              default: 100
-            },
-            page: {
-              type: 'number',
-              description: 'Page number for pagination',
-              default: 1
-            },
-            pageSize: {
-              type: 'number',
-              description: 'Number of items per page',
-              default: 20
+              description: 'Number of logs to return (max 5)',
+              default: 5
             }
           },
           required: ['query']
@@ -128,8 +117,8 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             limit: {
               type: 'number',
-              description: 'Number of logs to return',
-              default: 100
+              description: 'Number of logs to return (max 5)',
+              default: 5
             }
           }
         }
@@ -142,12 +131,12 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             from: {
               type: 'string',
-              description: 'Start timestamp',
+              description: 'Start timestamp (ISO 8601)',
               required: true
             },
             to: {
               type: 'string',
-              description: 'End timestamp',
+              description: 'End timestamp (ISO 8601)',
               required: true
             }
           },
@@ -187,81 +176,56 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-// Helper function to paginate response
-function paginateResponse(data, page = 1, pageSize = 20) {
-  const totalItems = data.length;
-  const totalPages = Math.ceil(totalItems / pageSize);
-  const startIndex = (page - 1) * pageSize;
-  const endIndex = Math.min(startIndex + pageSize, totalItems);
-  
-  const paginatedData = data.slice(startIndex, endIndex);
-  
-  return {
-    data: paginatedData,
-    pagination: {
-      page,
-      pageSize,
-      totalItems,
-      totalPages,
-      hasNextPage: page < totalPages,
-      hasPreviousPage: page > 1
-    }
-  };
-}
-
 // Handle tool calls
 mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
+    const MAX_LOGS = 5; // Hard limit to prevent token overflow
+    
     switch (request.params.name) {
       case 'logs_recent': {
-        const { limit = 100, page = 1, pageSize = 20 } = request.params.arguments || {};
-        const apl = `${AXIOM_DATASET} | sort _time desc | limit ${limit}`;
+        const { limit = 5 } = request.params.arguments || {};
+        const safeLimit = Math.min(limit, MAX_LOGS);
+        const apl = `['${AXIOM_DATASET}'] | sort by _time desc | limit ${safeLimit}`;
         const logs = await queryAxiom(apl);
-        
-        const paginated = paginateResponse(logs, page, pageSize);
-        return { content: [{ type: 'text', text: JSON.stringify(paginated, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+      }
+      
+      case 'logs_search': {
+        const { query, limit = 5 } = request.params.arguments;
+        const safeLimit = Math.min(limit, MAX_LOGS);
+        const apl = `['${AXIOM_DATASET}'] | where message contains "${query}" | sort by _time desc | limit ${safeLimit}`;
+        const logs = await queryAxiom(apl);
+        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+      }
+      
+      case 'logs_errors': {
+        const { limit = 5 } = request.params.arguments || {};
+        const safeLimit = Math.min(limit, MAX_LOGS);
+        const apl = `['${AXIOM_DATASET}'] | where level == "error" | sort by _time desc | limit ${safeLimit}`;
+        const logs = await queryAxiom(apl);
+        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
       }
       
       case 'logs_timeRange': {
         const { from, to } = request.params.arguments;
-        const apl = `${AXIOM_DATASET} | sort _time desc`;
+        const apl = `['${AXIOM_DATASET}'] | sort by _time desc | limit ${MAX_LOGS}`;
         const logs = await queryAxiom(apl, from, to);
-        
-        return { content: [{ type: 'text', text: limitResponse(logs) }] };
-      }
-      
-      case 'logs_errors': {
-        const limit = request.params.arguments?.limit || 100;
-        const apl = `${AXIOM_DATASET} | where level == "error" or data.level == "error" | sort _time desc | limit ${limit}`;
-        const logs = await queryAxiom(apl);
-        
-        return { content: [{ type: 'text', text: limitResponse(logs) }] };
-      }
-      
-      case 'logs_search': {
-        const { query, limit = 100, page = 1, pageSize = 20 } = request.params.arguments;
-        const apl = `${AXIOM_DATASET} | where contains(message, "${query}") or contains(data.message, "${query}") | sort _time desc | limit ${limit}`;
-        const logs = await queryAxiom(apl);
-        
-        const paginated = paginateResponse(logs, page, pageSize);
-        return { content: [{ type: 'text', text: JSON.stringify(paginated, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
       }
       
       case 'logs_byRequest': {
         const { requestId } = request.params.arguments;
-        const apl = `${AXIOM_DATASET} | where request_id == "${requestId}" or data.requestId == "${requestId}" | sort _time asc`;
+        const apl = `['${AXIOM_DATASET}'] | where request_id == "${requestId}" | sort by _time asc | limit ${MAX_LOGS}`;
         const logs = await queryAxiom(apl);
-        
-        return { content: [{ type: 'text', text: limitResponse(logs) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
       }
       
       case 'logs_stats': {
-        const { hours = 24 } = request.params.arguments;
+        const { hours = 24 } = request.params.arguments || {};
         const startTime = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-        const apl = `${AXIOM_DATASET} | summarize count() by bin(_time, 1h), source, level | sort _time desc`;
+        const apl = `['${AXIOM_DATASET}'] | summarize count() by bin(_time, 1h), level | sort by _time desc`;
         const stats = await queryAxiom(apl, startTime);
-        
-        return { content: [{ type: 'text', text: limitResponse(stats) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
       }
       
       default:
@@ -294,63 +258,77 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', dataset: AXIOM_DATASET });
 });
 
-// API endpoints for MCP proxy client
+// Debug endpoint
+app.get('/debug/test-query', async (req, res) => {
+  try {
+    const apl = `['${AXIOM_DATASET}'] | sort by _time desc | limit 1`;
+    console.log('Debug APL:', apl);
+    const logs = await queryAxiom(apl);
+    res.json({
+      apl,
+      count: logs.length,
+      firstLog: logs[0],
+      totalSize: JSON.stringify(logs).length
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API endpoints for direct HTTP access
 app.post('/api/mcp/:tool', async (req, res) => {
   try {
     const toolName = req.params.tool;
     const args = req.body;
+    const MAX_LOGS = 5;
     
     console.log(`API call to tool: ${toolName}`, args);
     
-    // Call the tool directly using the same logic as the MCP handler
     let result;
     switch (toolName) {
       case 'logs_recent': {
-        const { limit = 100 } = args;
-        const apl = `${AXIOM_DATASET} | sort by _time desc | limit ${limit}`;
-        const logs = await queryAxiom(apl);
-        result = logs;
+        const { limit = 5 } = args;
+        const safeLimit = Math.min(limit, MAX_LOGS);
+        const apl = `['${AXIOM_DATASET}'] | sort by _time desc | limit ${safeLimit}`;
+        result = await queryAxiom(apl);
+        break;
+      }
+      
+      case 'logs_search': {
+        const { query, limit = 5 } = args;
+        const safeLimit = Math.min(limit, MAX_LOGS);
+        const apl = `['${AXIOM_DATASET}'] | where message contains "${query}" | sort by _time desc | limit ${safeLimit}`;
+        result = await queryAxiom(apl);
         break;
       }
       
       case 'logs_errors': {
-        const { limit = 100 } = args;
-        const apl = `${AXIOM_DATASET} | where level == "error" or level == "ERROR" or contains(message, "error") or contains(message, "Error") | sort by _time desc | limit ${limit}`;
-        const logs = await queryAxiom(apl);
-        result = logs;
+        const { limit = 5 } = args;
+        const safeLimit = Math.min(limit, MAX_LOGS);
+        const apl = `['${AXIOM_DATASET}'] | where level == "error" | sort by _time desc | limit ${safeLimit}`;
+        result = await queryAxiom(apl);
         break;
       }
       
       case 'logs_timeRange': {
         const { from, to } = args;
-        const apl = `${AXIOM_DATASET} | sort by _time desc`;
-        const logs = await queryAxiom(apl, from, to);
-        result = logs;
-        break;
-      }
-      
-      case 'logs_search': {
-        const { query, limit = 100 } = args;
-        const apl = `${AXIOM_DATASET} | where contains(message, "${query}") or contains(data.message, "${query}") | sort by _time desc | limit ${limit}`;
-        const logs = await queryAxiom(apl);
-        result = logs;
+        const apl = `['${AXIOM_DATASET}'] | sort by _time desc | limit ${MAX_LOGS}`;
+        result = await queryAxiom(apl, from, to);
         break;
       }
       
       case 'logs_byRequest': {
         const { requestId } = args;
-        const apl = `${AXIOM_DATASET} | where request_id == "${requestId}" or data.requestId == "${requestId}" | sort by _time asc`;
-        const logs = await queryAxiom(apl);
-        result = logs;
+        const apl = `['${AXIOM_DATASET}'] | where request_id == "${requestId}" | sort by _time asc | limit ${MAX_LOGS}`;
+        result = await queryAxiom(apl);
         break;
       }
       
       case 'logs_stats': {
         const { hours = 24 } = args;
         const startTime = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-        const apl = `${AXIOM_DATASET} | summarize count() by bin(_time, 1h), source, level | sort by _time desc`;
-        const stats = await queryAxiom(apl, startTime);
-        result = stats;
+        const apl = `['${AXIOM_DATASET}'] | summarize count() by bin(_time, 1h), level | sort by _time desc`;
+        result = await queryAxiom(apl, startTime);
         break;
       }
       
