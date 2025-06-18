@@ -68,21 +68,31 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'logs_recent',
-        description: 'Get recent logs',
+        description: 'Get recent logs with pagination',
         inputSchema: {
           type: 'object',
           properties: {
             limit: {
               type: 'number',
-              description: 'Number of logs to return',
+              description: 'Number of logs to fetch from Axiom',
               default: 100
+            },
+            page: {
+              type: 'number',
+              description: 'Page number for pagination',
+              default: 1
+            },
+            pageSize: {
+              type: 'number',
+              description: 'Number of items per page',
+              default: 20
             }
           }
         }
       },
       {
         name: 'logs_search',
-        description: 'Search logs by text',
+        description: 'Search logs by text with pagination',
         inputSchema: {
           type: 'object',
           properties: {
@@ -93,8 +103,18 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             limit: {
               type: 'number',
-              description: 'Number of logs to return',
+              description: 'Number of logs to fetch from Axiom',
               default: 100
+            },
+            page: {
+              type: 'number',
+              description: 'Page number for pagination',
+              default: 1
+            },
+            pageSize: {
+              type: 'number',
+              description: 'Number of items per page',
+              default: 20
             }
           },
           required: ['query']
@@ -167,17 +187,26 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-// Helper function to limit response size
-function limitResponse(data, maxLength = 50000) {
-  const response = JSON.stringify(data, null, 2);
-  if (response.length > maxLength) {
-    // Calculate how many items to keep
-    const ratio = maxLength / response.length;
-    const itemsToKeep = Math.max(1, Math.floor(data.length * ratio * 0.8)); // 0.8 for safety margin
-    const truncated = data.slice(0, itemsToKeep);
-    return JSON.stringify(truncated, null, 2);
-  }
-  return response;
+// Helper function to paginate response
+function paginateResponse(data, page = 1, pageSize = 20) {
+  const totalItems = data.length;
+  const totalPages = Math.ceil(totalItems / pageSize);
+  const startIndex = (page - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, totalItems);
+  
+  const paginatedData = data.slice(startIndex, endIndex);
+  
+  return {
+    data: paginatedData,
+    pagination: {
+      page,
+      pageSize,
+      totalItems,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1
+    }
+  };
 }
 
 // Handle tool calls
@@ -185,11 +214,12 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (request.params.name) {
       case 'logs_recent': {
-        const limit = request.params.arguments?.limit || 100;
+        const { limit = 100, page = 1, pageSize = 20 } = request.params.arguments || {};
         const apl = `${AXIOM_DATASET} | sort _time desc | limit ${limit}`;
         const logs = await queryAxiom(apl);
         
-        return { content: [{ type: 'text', text: limitResponse(logs) }] };
+        const paginated = paginateResponse(logs, page, pageSize);
+        return { content: [{ type: 'text', text: JSON.stringify(paginated, null, 2) }] };
       }
       
       case 'logs_timeRange': {
@@ -209,11 +239,12 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       
       case 'logs_search': {
-        const { query, limit = 100 } = request.params.arguments;
+        const { query, limit = 100, page = 1, pageSize = 20 } = request.params.arguments;
         const apl = `${AXIOM_DATASET} | where contains(message, "${query}") or contains(data.message, "${query}") | sort _time desc | limit ${limit}`;
         const logs = await queryAxiom(apl);
         
-        return { content: [{ type: 'text', text: limitResponse(logs) }] };
+        const paginated = paginateResponse(logs, page, pageSize);
+        return { content: [{ type: 'text', text: JSON.stringify(paginated, null, 2) }] };
       }
       
       case 'logs_byRequest': {
