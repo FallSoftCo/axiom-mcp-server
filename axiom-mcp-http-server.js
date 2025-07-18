@@ -2728,7 +2728,8 @@ app.post('/api/mcp/:toolName', async (req, res) => {
       case 'delicious-sienna-fluke_db_deleteAnonymousUsers':
       case 'prod_db_deleteAnonymousUsers': {
         const env = toolName.startsWith('delicious-sienna-fluke_db_') ? 'delicious-sienna-fluke' : 'production';
-        const { userIds, dryRun = true } = args;
+        const { userIds: providedUserIds, dryRun = true } = args;
+        let userIds = providedUserIds;
         
         if (!userIds || userIds.length === 0) {
           // If no user IDs specified, find all anonymous users

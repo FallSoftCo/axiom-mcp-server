@@ -5,15 +5,16 @@
   "main": "axiom-mcp-http-server.js",
   "type": "module",
   "scripts": {
-    "start": "node axiom-mcp-http-server.js",
-    "start:stdio": "node axiom-mcp-server.js"
+    "start": "node axiom-mcp-http-server.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "eventsource": "^3.0.7",
     "express": "^4.21.2",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^2.7.0",
+    "pg": "^8.16.3"
   },
   "engines": {
     "node": ">=18.0.0"

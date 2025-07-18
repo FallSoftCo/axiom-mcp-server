@@ -6,7 +6,8 @@ primary_region = "iad"
 
 [env]
   PORT = "3456"
-  AXIOM_DATASET = "tlyt-logs"
+  AXIOM_DATASET = "delicious-sienna-fluke"
+  AXIOM_PRODUCTION_DATASET = "delicious-sienna-fluke-production"
 
 [http_service]
   internal_port = 3456

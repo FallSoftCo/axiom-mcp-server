@@ -22,7 +22,7 @@ Once deployed, update your MCP configuration to use the remote server:
 ```json
 {
   "mcpServers": {
-    "tlyt-logs": {
+    "delicious-sienna-fluke": {
       "transport": "sse",
       "url": "https://axiom-mcp-server.fly.dev/sse"
     }
